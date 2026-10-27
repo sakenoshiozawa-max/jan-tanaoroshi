@@ -134,14 +134,20 @@
       });
   }
 
+  function loadMaster() {
+    return api({ action: 'master' })
+      .then(function (d) { master = d.master || {}; })
+      .catch(function (e) { setStatus('商品マスタを読み込めませんでした：' + e.message, true); });
+  }
+
   conn = readConn();
   if (!conn) { $('needConn').hidden = false; }
   else {
     $('app').hidden = false; $('resetBtn').hidden = false;
     $('staff').value = load('staff');
     $('loc').value = load('loc');
-    api({ action: 'master' }).then(function (d) { master = d.master || {}; setStatus('商品マスタ ' + Object.keys(master).length + '件を読み込みました'); })
-      .catch(function (e) { setStatus('商品マスタを読み込めませんでした：' + e.message, true); });
+    loadMaster().then(function () { setStatus('商品マスタ ' + Object.keys(master).length + '件を読み込みました'); });
+    setInterval(loadMaster, 120000);   // ほかの人が登録した商品も2分ごとに取り込む
   }
 
   $('resetBtn').addEventListener('click', function () { forget('conn'); location.reload(); });
@@ -168,7 +174,14 @@
     if (!$('staff').value.trim() || !$('loc').value.trim()) { setStatus('先に担当と場所を入れてください', true); return; }
     beep();
     current = { jan: code, name: master[code] || '' };
-    if (current.name) { addQty(1); } else { showCurrent(); $('newName').focus(); }
+    if (current.name) { addQty(1); return; }
+    // 未登録なら、ほかの人が登録済みかもしれないので商品マスタを読み直してから判断する
+    var c = current;
+    loadMaster().then(function () {
+      if (current !== c) return;
+      c.name = master[c.jan] || '';
+      if (c.name) { addQty(1); } else { showCurrent(); $('newName').focus(); }
+    });
   }
 
   function key() { return $('loc').value.trim() + '|' + current.jan; }
