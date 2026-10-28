@@ -48,9 +48,9 @@
   ul.list li > span:first-child { min-width: 0; overflow-wrap: anywhere; }
   ul.list li > span:last-child { font-variant-numeric: tabular-nums; white-space: nowrap; }
   ul.list li.hl { background: var(--hl); }
-  ul#results li { padding: 0; }
-  ul#results button { width: 100%; text-align: left; border: 0; border-radius: 0; padding: 10px 4px; background: transparent; }
-  ul#results .sub { display: block; font-size: 12px; color: var(--muted); }
+  ul#results li, ul#choices li { padding: 0; }
+  ul#results button, ul#choices button { width: 100%; text-align: left; border: 0; border-radius: 0; padding: 10px 4px; background: transparent; }
+  ul#results .sub, ul#choices .sub { display: block; font-size: 12px; color: var(--muted); }
   details > summary { cursor: pointer; font-weight: 600; }
   #missList, #progList { max-height: 60vh; overflow-y: auto; }
 </style>
@@ -87,8 +87,14 @@
       <div class="name" id="lastName"></div>
       <div class="meta" id="lastMeta"></div>
 
+      <div id="choiceBox" hidden style="margin-top:10px">
+        <div class="unknown">このJANには年違いの商品がいくつかあります。どれか選んでください。</div>
+        <ul id="choices" class="list"></ul>
+        <button id="choiceAdd" type="button" style="margin-top:8px">ここに無い年を追加する</button>
+      </div>
+
       <div id="registerBox" hidden style="margin-top:10px">
-        <div class="unknown">このJANはまだ商品に紐づいていません。リストから商品を探して選んでください。</div>
+        <div class="unknown" id="registerMsg">このJANはまだ商品に紐づいていません。リストから商品を探して選んでください。</div>
         <label style="margin-top:6px">商品名で探す（漢字・カタカナ・英字。楽一の名前でも探せます）
           <input id="q" autocomplete="off" placeholder="例：魔王 720">
         </label>
@@ -111,6 +117,7 @@
         <button type="button" data-d="1">＋1</button>
         <label style="flex:0 1 110px">まとめて追加<input id="bulk" inputmode="numeric" placeholder="例：12"></label>
         <button type="button" id="bulkBtn">追加</button>
+        <button type="button" id="extraBtn" class="small" style="flex-basis:100%">同じJANで年違いの商品（熟成年・ヴィンテージ）を追加する</button>
       </div>
     </div>
 
@@ -155,8 +162,9 @@
   //   例：https://<GitHubのユーザー名>.github.io/jan-tanaoroshi/#c=<URLエンコードした「スクリプトURL|合言葉」>
   var conn = null;
   var items = [];           // 商品リスト [{no, jan, name, cap, kind, rname, area, key}]
-  var byJan = {};           // JAN -> 商品
-  var current = null;       // 画面に出している商品 {jan, item}
+  var byJan = {};           // JAN -> [商品]（ふつうは1つ。熟成年・ヴィンテージ違いがあると複数）
+  var byNo = {};            // No -> 商品
+  var current = null;       // 画面に出している商品 {jan, item, extra}（extra：同じJANの別商品を足すところ）
   var shelf = { loc: '', qty: {}, names: {}, staff: [], status: '' };   // この棚で読んだ数（サーバー分）
   var shelves = [];         // 全棚の進み具合
   var lastHit = { code: '', at: 0 };
@@ -172,6 +180,12 @@
   function staff() { return $('staff').value.trim(); }
   function loc() { return $('loc').value.trim(); }
   function label(it) { return it ? it.name + (it.cap ? '　' + it.cap : '') : ''; }
+  // 記録・集計のまとめ方：商品の No ごと（No の無い古い記録は JAN ごと）
+  function keyOf(r) { return r.no ? 'n' + r.no : 'j' + r.jan; }
+  function indexItems() {
+    byJan = {}; byNo = {};
+    items.forEach(function (it) { byNo[it.no] = it; if (it.jan) (byJan[it.jan] = byJan[it.jan] || []).push(it); });
+  }
 
   // 検索用：全角半角・カタカナひらがな・空白や記号の違いをならす
   function norm(s) {
@@ -210,15 +224,15 @@
   function putItem(it) {
     for (var i = 0; i < items.length; i++) if (items[i].no === it.no) { items[i] = it; break; }
     if (i === items.length) items.push(it);
-    if (it.jan) byJan[it.jan] = it;
+    indexItems();
+    return it;
   }
 
   function loadMaster() {
     return api({ action: 'master' })
       .then(function (d) {
         items = (d.items || []).map(toItem);
-        byJan = {};
-        items.forEach(function (it) { if (it.jan) byJan[it.jan] = it; });
+        indexItems();
         var kinds = {};
         items.forEach(function (it) { if (it.kind) kinds[it.kind] = true; });
         $('kinds').innerHTML = '';
@@ -236,7 +250,7 @@
     shelf.loc = loc();
     showShelfBar();
     loadMaster().then(function () {
-      var linked = Object.keys(byJan).length;
+      var linked = items.filter(function (it) { return it.jan; }).length;
       setStatus('商品リスト ' + items.length + '件（JAN紐づけ済み ' + linked + '件）を読み込みました');
     });
     loadShelf();
@@ -277,9 +291,10 @@
     if (m) { setLoc(m[1].trim()); beep(); setStatus('場所を「' + m[1].trim() + '」にしました'); return; }
     if (!/^\d{8,14}$/.test(code)) { setStatus('JANではないコードです：' + code, true); return; }
     if (!staff() || !loc()) { beep(false); setStatus('先に担当と場所を入れてください', true); return; }
-    var it = byJan[code];
-    current = { jan: code, item: it || null };
-    if (it) { beep(); addQty(1); return; }
+    var list = byJan[code] || [];
+    current = { jan: code, item: list.length === 1 ? list[0] : null };
+    if (list.length === 1) { beep(); addQty(1); return; }
+    if (list.length > 1) { beep(); showCurrent(); setStatus('年違いの商品があります。どれか選んでください'); return; }
     // まだ紐づいていない：ほかの人が紐づけ済みかもしれないので、このJANだけ問い合わせる
     beep(false);
     var c = current;
@@ -288,22 +303,27 @@
     api({ action: 'lookup', jan: code })
       .then(function (d) {
         if (current !== c) return;
-        if (d.item) { putItem(toItem(d.item)); c.item = byJan[code]; addQty(1); setStatus('ほかの人が紐づけ済みの商品でした'); }
+        var found = (d.items || (d.item ? [d.item] : [])).map(toItem);
+        found.forEach(putItem);
+        if (found.length === 1) { c.item = found[0]; addQty(1); setStatus('ほかの人が紐づけ済みの商品でした'); }
+        else if (found.length > 1) { showCurrent(); setStatus('年違いの商品があります。どれか選んでください'); }
         else { setStatus('リストから商品を選んでください'); $('q').value = ''; renderResults(); $('q').focus(); }
       })
       .catch(function (e) { setStatus('確認できませんでした：' + e.message, true); });
   }
 
   // 未送信の分も含めた、この棚のこの商品の数
-  function countFor(jan) {
-    var n = shelf.loc === loc() ? (shelf.qty[jan] || 0) : 0;
-    queue.forEach(function (r) { if (r.loc === loc() && r.jan === jan) n += r.qty; });
+  function countFor(it) {
+    var k = keyOf(it);
+    var n = shelf.loc === loc() ? (shelf.qty[k] || 0) : 0;
+    queue.forEach(function (r) { if (r.loc === loc() && keyOf(r) === k) n += r.qty; });
     return n;
   }
 
   function addQty(d) {
     if (!current || !current.item || !d) return;
-    queue.push({ staff: staff(), loc: loc(), jan: current.jan, name: label(current.item), qty: d });
+    queue.push({ staff: staff(), loc: loc(), jan: current.jan, no: current.item.no, name: label(current.item), qty: d });
+    current.added = (current.added || 0) + d;   // 年違いに数え直すときに取り消す分
     addHist(label(current.item) + '（' + loc() + '）', d);
     showCurrent(); renderShelf();
     pump();
@@ -314,10 +334,39 @@
     var it = current.item;
     $('lastName').textContent = it ? label(it) : 'JAN ' + current.jan;
     $('lastMeta').textContent = (it && it.kind ? it.kind + '　' : '') + 'JAN ' + current.jan + '　場所：' + loc();
-    $('registerBox').hidden = !!it;
+    var choices = !it && !current.extra ? byJan[current.jan] || [] : [];
+    $('choiceBox').hidden = choices.length < 2;
+    $('choices').innerHTML = '';
+    if (choices.length > 1) choices.slice().sort(function (a, b) { return a.name < b.name ? -1 : 1; }).forEach(function (c) {
+      var li = document.createElement('li'), b = document.createElement('button');
+      b.type = 'button'; b.textContent = label(c);
+      var sub = document.createElement('span'); sub.className = 'sub';
+      sub.textContent = 'この棚 ' + countFor(c) + '本' + (c.kind ? '　' + c.kind : '');
+      b.appendChild(sub);
+      b.addEventListener('click', function () { if (current && !current.item) { current.item = c; addQty(1); } });
+      li.appendChild(b); $('choices').appendChild(li);
+    });
+    $('registerBox').hidden = !!it || choices.length > 1;
+    $('registerMsg').textContent = current.extra
+      ? 'JAN ' + current.jan + ' に、年違いの商品を足します。リストから探すか、下で新しく登録してください。'
+      : 'このJANはまだ商品に紐づいていません。リストから商品を探して選んでください。';
     $('qtyBox').hidden = !it;
-    if (it) $('lastCount').textContent = countFor(current.jan);
+    if (it) $('lastCount').textContent = countFor(it);
   }
+
+  // 同じJANで年違いの商品を足す：読んだ1本を取り消して、商品を選び直す
+  function startExtra() {
+    if (!current) return;
+    var it = current.item;
+    var n = it ? current.added || 0 : 0;
+    if (it && !confirm('「' + label(it) + '」とは年が違う商品として数え直します。' +
+      (n > 0 ? 'いま数えた ' + n + '本は「' + label(it) + '」から取り消します。' : '') + 'よろしいですか？')) return;
+    if (n > 0) addQty(-n);
+    current = { jan: current.jan, item: null, extra: true };
+    showCurrent(); $('q').value = ''; renderResults(); $('q').focus();
+  }
+  $('extraBtn').addEventListener('click', startExtra);
+  $('choiceAdd').addEventListener('click', startExtra);
 
   // リストから探す：JANが未紐づけの商品だけ。今いる場所の区分にあった商品を先に出す
   function renderResults() {
@@ -357,9 +406,9 @@
     if (!confirm('JAN ' + current.jan + ' を「' + label(it) + '」に紐づけて1本数えます。よろしいですか？')) return;
     var c = current;
     setStatus('紐づけ中…');
-    api({ action: 'link', jan: c.jan, no: it.no })
+    api({ action: 'link', jan: c.jan, no: it.no, extra: !!c.extra })
       .then(function (d) {
-        var got = toItem(d.item); putItem(got);
+        var got = putItem(toItem(d.item));
         if (current !== c) return;
         c.item = got; $('q').value = ''; $('results').innerHTML = '';
         addQty(1);
@@ -373,11 +422,11 @@
     if (!name || !current) { setStatus('商品名を入れてください', true); return; }
     var c = current;
     $('regBtn').disabled = true;
-    api({ action: 'register', jan: c.jan, name: name, cap: $('newCap').value.trim(), kind: $('newKind').value.trim() })
+    api({ action: 'register', jan: c.jan, name: name, cap: $('newCap').value.trim(), kind: $('newKind').value.trim(), extra: !!c.extra })
       .then(function (d) {
         $('regBtn').disabled = false;
         $('newName').value = ''; $('newCap').value = ''; $('newKind').value = '';
-        var got = toItem(d.item); putItem(got);
+        var got = putItem(toItem(d.item));
         if (current !== c) return;
         c.item = got; addQty(1);
       })
@@ -404,8 +453,9 @@
         // 送れた分は、この棚の数に先に足しておく（次の読み込みで正しい数に置き換わる）
         batch.forEach(function (r) {
           if (r.loc !== shelf.loc) return;
-          shelf.qty[r.jan] = (shelf.qty[r.jan] || 0) + r.qty;
-          shelf.names[r.jan] = shelf.names[r.jan] || r.name;
+          var k = keyOf(r);
+          shelf.qty[k] = (shelf.qty[k] || 0) + r.qty;
+          shelf.names[k] = shelf.names[k] || r.name;
         });
         if (shelf.loc && shelf.staff.indexOf(staff()) < 0 && batch.some(function (r) { return r.loc === shelf.loc; })) shelf.staff.push(staff());
         queue.splice(0, batch.length); sending = false; sendGen++;
@@ -432,9 +482,9 @@
         if (l !== loc()) return loadShelf();
         if (gen !== sendGen) return loadShelf();   // 読み込み中に送った分が抜けているので読み直す
         shelf = { loc: l, qty: {}, names: {}, staff: d.staff || [], status: d.status || '' };
-        (d.items || []).forEach(function (s) { shelf.qty[s.jan] = s.qty; shelf.names[s.jan] = s.name; });
+        (d.items || []).forEach(function (s) { var k = keyOf(s); shelf.qty[k] = s.qty; shelf.names[k] = s.name; });
         showShelfBar(); renderShelf();
-        if (current && current.item) $('lastCount').textContent = countFor(current.jan);
+        if (current && current.item) $('lastCount').textContent = countFor(current.item);
       })
       .catch(function () { shelfLoading = false; });
   }
@@ -459,15 +509,18 @@
     var l = loc(), ul = $('shelfList'); ul.innerHTML = '';
     var qty = {}, names = {};
     if (shelf.loc === l) { Object.keys(shelf.qty).forEach(function (j) { qty[j] = shelf.qty[j]; names[j] = shelf.names[j]; }); }
-    queue.forEach(function (r) { if (r.loc === l) { qty[r.jan] = (qty[r.jan] || 0) + r.qty; names[r.jan] = names[r.jan] || r.name; } });
-    var rows = Object.keys(qty).filter(function (j) { return qty[j] !== 0; })
-      .map(function (j) { return { jan: j, text: byJan[j] ? label(byJan[j]) : names[j] || 'JAN ' + j, qty: qty[j] }; })
+    queue.forEach(function (r) { var k = keyOf(r); if (r.loc === l) { qty[k] = (qty[k] || 0) + r.qty; names[k] = names[k] || r.name; } });
+    var rows = Object.keys(qty).filter(function (k) { return qty[k] !== 0; })
+      .map(function (k) {
+        var it = k.charAt(0) === 'n' ? byNo[k.slice(1)] : (byJan[k.slice(1)] || [])[0];
+        return { key: k, text: it ? label(it) : names[k] || 'JAN ' + k.slice(1), qty: qty[k] };
+      })
       .sort(function (a, b) { return a.text < b.text ? -1 : 1; });
     var total = 0;
     rows.forEach(function (r) {
       total += r.qty;
       var li = document.createElement('li');
-      if (current && current.jan === r.jan) li.className = 'hl';
+      if (current && current.item && keyOf(current.item) === r.key) li.className = 'hl';
       var a = document.createElement('span'); a.textContent = r.text;
       var b = document.createElement('span'); b.textContent = r.qty + '本';
       li.appendChild(a); li.appendChild(b); ul.appendChild(li);
