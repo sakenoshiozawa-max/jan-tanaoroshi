@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>JAN棚卸</title>
+<style>
+  :root {
+    --bg: #f6f7f5; --panel: #ffffff; --fg: #1d2420; --muted: #5d6a63;
+    --line: #d5dbd7; --accent: #1f6b4f; --warn: #a15c00; --err: #b3261e; --hl: #e3f1ea;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #121614; --panel: #1b211e; --fg: #e6ece8; --muted: #9aa8a0;
+      --line: #2d3732; --accent: #5cc49a; --warn: #f0b05a; --err: #f28b82; --hl: #22362d; color-scheme: dark; }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.5 system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
+    padding: max(12px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) 32px max(16px, env(safe-area-inset-left)); }
+  h1 { font-size: 18px; margin: 0 0 8px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: end; }
+  .row > label { flex: 1 1 140px; min-width: 0; }
+  label { display: block; font-size: 13px; color: var(--muted); }
+  input, select { width: 100%; font-size: 17px; padding: 10px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--panel); color: var(--fg); }
+  button { font-size: 16px; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--panel); color: var(--fg); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.small { font-size: 13px; padding: 4px 10px; }
+  button:disabled { opacity: .5; }
+  button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 1px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin-top: 12px; }
+  .cap { font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+  #reader { width: 100%; max-width: 480px; margin-top: 12px; }
+  #last .name { font-size: 22px; font-weight: 700; overflow-wrap: anywhere; line-height: 1.3; }
+  #last .meta { color: var(--muted); font-size: 14px; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .big { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .status { font-size: 14px; color: var(--muted); margin-top: 8px; }
+  .status.err { color: var(--err); }
+  .unknown { color: var(--warn); font-weight: 600; }
+  .warn { color: var(--warn); font-size: 14px; }
+  #shelfBar { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+  #shelfBar .st { font-size: 14px; color: var(--muted); }
+  ul.list { list-style: none; padding: 0; margin: 0; font-size: 14px; }
+  ul.list li { display: flex; justify-content: space-between; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+  ul.list li > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+  ul.list li > span:last-child { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  ul.list li.hl { background: var(--hl); }
+  ul#results li, ul#choices li { padding: 0; }
+  ul#results button, ul#choices button { width: 100%; text-align: left; border: 0; border-radius: 0; padding: 10px 4px; background: transparent; }
+  ul#results .sub, ul#choices .sub { display: block; font-size: 12px; color: var(--muted); }
+  details > summary { cursor: pointer; font-weight: 600; }
+  #missList, #progList { max-height: 60vh; overflow-y: auto; }
+</style>
+</head>
+<body>
+  <h1><span>JAN棚卸（試作）</span><button id="resetBtn" class="small" type="button" hidden>接続を解除</button></h1>
+
+  <div id="needConn" class="panel" hidden>
+    <strong>まだ接続されていません。</strong>
+    <div style="margin-top:4px">店の担当者から配られた「接続用QRコード」をスマホのカメラで読んで、このページを開き直してください。</div>
+  </div>
+
+  <div id="app" hidden>
+    <div class="row">
+      <label>担当<input id="staff" placeholder="例：信香" autocomplete="off"></label>
+      <label>場所・棚<input id="loc" placeholder="例：倉庫A-1" autocomplete="off"></label>
+    </div>
+
+    <div id="shelfBar" class="panel">
+      <div><div id="shelfName" style="font-weight:600"></div><div class="st" id="shelfSt"></div></div>
+      <button id="doneBtn" type="button">この棚を完了にする</button>
+    </div>
+    <div id="shelfWarn" class="warn" hidden></div>
+
+    <div class="row" style="margin-top:12px">
+      <button id="camBtn" class="primary" type="button">カメラで読む</button>
+      <label style="flex:1 1 180px">スキャナー・手入力（JANを入れてEnter）
+        <input id="kbd" inputmode="numeric" autocomplete="off" placeholder="ここにスキャナーで読む">
+      </label>
+    </div>
+    <div id="reader"></div>
+
+    <div id="last" class="panel" hidden>
+      <div class="name" id="lastName"></div>
+      <div class="meta" id="lastMeta"></div>
+
+      <div id="choiceBox" hidden style="margin-top:10px">
+        <div class="unknown">このJANには年違いの商品がいくつかあります。どれか選んでください。</div>
+        <ul id="choices" class="list"></ul>
+        <button id="choiceAdd" type="button" style="margin-top:8px">ここに無い年を追加する</button>
+      </div>
+
+      <div id="registerBox" hidden style="margin-top:10px">
+        <div class="unknown" id="registerMsg">このJANはまだ商品に紐づいていません。リストから商品を探して選んでください。</div>
+        <label style="margin-top:6px">商品名で探す（漢字・カタカナ・英字。楽一の名前でも探せます）
+          <input id="q" autocomplete="off" placeholder="例：魔王 720">
+        </label>
+        <ul id="results" class="list"></ul>
+        <details style="margin-top:10px">
+          <summary>リストに無い商品を新しく登録する</summary>
+          <div class="row" style="margin-top:6px">
+            <label style="flex:1 1 100%">商品名<input id="newName" autocomplete="off"></label>
+            <label>容量<input id="newCap" autocomplete="off" placeholder="例：720ml"></label>
+            <label>種類<input id="newKind" list="kinds" autocomplete="off" placeholder="例：日本酒"></label>
+            <button id="regBtn" class="primary" type="button">登録して1本追加</button>
+          </div>
+          <datalist id="kinds"></datalist>
+        </details>
+      </div>
+
+      <div id="qtyBox" class="row" style="margin-top:10px">
+        <div><div class="cap" style="margin:0">この棚の数（全員分）</div><div class="big" id="lastCount">0</div></div>
+        <button type="button" data-d="-1">−1</button>
+        <button type="button" data-d="1">＋1</button>
+        <label style="flex:0 1 110px">まとめて追加<input id="bulk" inputmode="numeric" placeholder="例：12"></label>
+        <button type="button" id="bulkBtn">追加</button>
+        <button type="button" id="extraBtn" class="small" style="flex-basis:100%">同じJANで年違いの商品（熟成年・ヴィンテージ）を追加する</button>
+      </div>
+    </div>
+
+    <div class="status" id="status">準備中…</div>
+
+    <div class="panel">
+      <div class="cap" id="shelfHead">この棚で読んだ商品（全員分）</div>
+      <ul id="shelfList" class="list"></ul>
+    </div>
+
+    <div class="panel">
+      <details id="progBox">
+        <summary id="progHead">棚の進み具合</summary>
+        <ul id="progList" class="list" style="margin-top:6px"></ul>
+      </details>
+    </div>
+
+    <div class="panel">
+      <details id="missBox">
+        <summary>読み忘れのチェック</summary>
+        <div class="cap" style="margin-top:6px">前回の棚卸でその場所にあったのに、今回まだどこでも読んでいない商品です（前回の記録は「店内・倉庫」などの大まかな区分だけです）。</div>
+        <div class="row">
+          <label>場所の区分
+            <select id="area"><option>店内</option><option>冷蔵庫</option><option>小屋</option><option>倉庫</option><option>その他</option></select>
+          </label>
+          <button id="missBtn" type="button">表示する</button>
+        </div>
+        <div class="cap" id="missHead" style="margin-top:8px"></div>
+        <ul id="missList" class="list"></ul>
+      </details>
+    </div>
+
+    <div class="panel">
+      <div class="cap">この端末で読んだ記録（新しい順）</div>
+      <ul id="hist" class="list"></ul>
+    </div>
+  </div>
+
+<script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js" integrity="sha384-c9d8RFSL+u3exBOJ4Yp3HUJXS4znl9f+z66d1y54ig+ea249SpqR+w1wyvXz/lk+" crossorigin="anonymous"></script>
+<script>
+  // 接続先（スクリプトのURL）と合言葉は、接続用QRのURLの # 以降で受け取り、この端末にだけ保存する
+  //   例：https://<GitHubのユーザー名>.github.io/jan-tanaoroshi/#c=<URLエンコードした「スクリプトURL|合言葉」>
+  var conn = null;
+  var items = [];           // 商品リスト [{no, jan, name, cap, kind, rname, area, key}]
+  var byJan = {};           // JAN -> [商品]（ふつうは1つ。熟成年・ヴィンテージ違いがあると複数）
+  var byNo = {};            // No -> 商品
+  var current = null;       // 画面に出している商品 {jan, item, extra}（extra：同じJANの別商品を足すところ）
+  var shelf = { loc: '', qty: {}, names: {}, staff: [], status: '' };   // この棚で読んだ数（サーバー分）
+  var shelves = [];         // 全棚の進み具合
+  var lastHit = { code: '', at: 0 };
+  var queue = [], sending = false, sendGen = 0;
+  var scanner = null, camOn = false;
+  var AREAS = ['店内', '冷蔵庫', '小屋', '倉庫', 'その他'];
+
+  var $ = function (id) { return document.getElementById(id); };
+  function setStatus(t, err) { $('status').textContent = t; $('status').className = 'status' + (err ? ' err' : ''); }
+  function store(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+  function load(k) { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } }
+  function forget(k) { try { localStorage.removeItem(k); } catch (e) {} }
+  function staff() { return $('staff').value.trim(); }
+  function loc() { return $('loc').value.trim(); }
+  function label(it) { return it ? it.name + (it.cap ? '　' + it.cap : '') : ''; }
+  // 記録・集計のまとめ方：商品の No ごと（No の無い古い記録は JAN ごと）
+  function keyOf(r) { return r.no ? 'n' + r.no : 'j' + r.jan; }
+  function indexItems() {
+    byJan = {}; byNo = {};
+    items.forEach(function (it) { byNo[it.no] = it; if (it.jan) (byJan[it.jan] = byJan[it.jan] || []).push(it); });
+  }
+
+  // 検索用：全角半角・カタカナひらがな・空白や記号の違いをならす
+  function norm(s) {
+    return String(s || '').normalize('NFKC').toLowerCase()
+      .replace(/[ァ-ヶ]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0x60); })
+      .replace(/[\s・･.\/／'’"”\-‐－]/g, '');
+  }
+
+  function readConn() {
+    var m = location.hash.match(/^#c=(.+)$/);
+    if (m) {
+      var raw = decodeURIComponent(m[1]);
+      var i = raw.lastIndexOf('|');
+      if (i > 0 && /^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(raw.slice(0, i))) store('conn', raw);
+      history.replaceState(null, '', location.pathname);   // アドレス欄から合言葉を消す
+    }
+    var saved = load('conn');
+    var j = saved.lastIndexOf('|');
+    return j > 0 ? { url: saved.slice(0, j), pass: saved.slice(j + 1) } : null;
+  }
+
+  // すべてPOST（text/plain）で送る。合言葉はURLに載せない
+  function api(body) {
+    return fetch(conn.url, { method: 'POST', body: JSON.stringify(Object.assign({ pass: conn.pass }, body)) })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) throw new Error(d.error || '失敗しました');
+        return d;
+      });
+  }
+
+  function toItem(a) {
+    return { no: a[0], jan: a[1], name: a[2], cap: a[3], kind: a[4], rname: a[5], area: a[6] || '',
+      key: norm(a[2] + ' ' + a[3] + ' ' + a[5]) };
+  }
+  function putItem(it) {
+    for (var i = 0; i < items.length; i++) if (items[i].no === it.no) { items[i] = it; break; }
+    if (i === items.length) items.push(it);
+    indexItems();
+    return it;
+  }
+
+  function loadMaster() {
+    return api({ action: 'master' })
+      .then(function (d) {
+        items = (d.items || []).map(toItem);
+        indexItems();
+        var kinds = {};
+        items.forEach(function (it) { if (it.kind) kinds[it.kind] = true; });
+        $('kinds').innerHTML = '';
+        Object.keys(kinds).sort().forEach(function (k) { var o = document.createElement('option'); o.value = k; $('kinds').appendChild(o); });
+      })
+      .catch(function (e) { setStatus('商品リストを読み込めませんでした：' + e.message, true); });
+  }
+
+  conn = readConn();
+  if (!conn) { $('needConn').hidden = false; }
+  else {
+    $('app').hidden = false; $('resetBtn').hidden = false;
+    $('staff').value = load('staff');
+    $('loc').value = load('loc');
+    shelf.loc = loc();
+    showShelfBar();
+    loadMaster().then(function () {
+      var linked = items.filter(function (it) { return it.jan; }).length;
+      setStatus('商品リスト ' + items.length + '件（JAN紐づけ済み ' + linked + '件）を読み込みました');
+    });
+    loadShelf();
+    setInterval(loadMaster, 300000);   // ほかの人が紐づけた商品も5分ごとに取り込む
+    setInterval(loadShelf, 30000);     // 棚の一覧と進み具合は30秒ごと
+  }
+
+  $('resetBtn').addEventListener('click', function () { forget('conn'); location.reload(); });
+  $('staff').addEventListener('change', function () { store('staff', staff()); showShelfBar(); });
+  $('loc').addEventListener('change', function () { setLoc(loc()); });
+
+  function setLoc(v) {
+    $('loc').value = v; store('loc', v);
+    shelf = { loc: v, qty: {}, names: {}, staff: [], status: '' };
+    showShelfBar(); renderShelf(); loadShelf();
+    var a = guessArea(v); if (a) $('area').value = a;
+  }
+  function guessArea(v) {
+    for (var i = 0; i < AREAS.length; i++) if (v.indexOf(AREAS[i]) >= 0) return AREAS[i];
+    return '';
+  }
+
+  function beep(ok) {
+    try { if (navigator.vibrate) navigator.vibrate(ok === false ? [60, 80, 60] : 60); } catch (e) {}
+    try {
+      var ctx = beep.ctx || (beep.ctx = new (window.AudioContext || window.webkitAudioContext)());
+      var o = ctx.createOscillator(), g = ctx.createGain();
+      o.frequency.value = ok === false ? 600 : 1800; g.gain.value = 0.08; o.connect(g); g.connect(ctx.destination);
+      o.start(); o.stop(ctx.currentTime + (ok === false ? 0.25 : 0.08));
+    } catch (e) {}
+  }
+
+  function handleCode(raw) {
+    var code = String(raw || '').trim();
+    if (!code) return;
+    // 「場所:倉庫A-1」のような棚QRなら場所を切り替える
+    var m = code.match(/^場所[:：](.+)$/);
+    if (m) { setLoc(m[1].trim()); beep(); setStatus('場所を「' + m[1].trim() + '」にしました'); return; }
+    if (!/^\d{8,14}$/.test(code)) { setStatus('JANではないコードです：' + code, true); return; }
+    if (!staff() || !loc()) { beep(false); setStatus('先に担当と場所を入れてください', true); return; }
+    var list = byJan[code] || [];
+    current = { jan: code, item: list.length === 1 ? list[0] : null };
+    if (list.length === 1) { beep(); addQty(1); return; }
+    if (list.length > 1) { beep(); showCurrent(); setStatus('年違いの商品があります。どれか選んでください'); return; }
+    // まだ紐づいていない：ほかの人が紐づけ済みかもしれないので、このJANだけ問い合わせる
+    beep(false);
+    var c = current;
+    showCurrent();
+    setStatus('確認中…');
+    api({ action: 'lookup', jan: code })
+      .then(function (d) {
+        if (current !== c) return;
+        var found = (d.items || (d.item ? [d.item] : [])).map(toItem);
+        found.forEach(putItem);
+        if (found.length === 1) { c.item = found[0]; addQty(1); setStatus('ほかの人が紐づけ済みの商品でした'); }
+        else if (found.length > 1) { showCurrent(); setStatus('年違いの商品があります。どれか選んでください'); }
+        else { setStatus('リストから商品を選んでください'); $('q').value = ''; renderResults(); $('q').focus(); }
+      })
+      .catch(function (e) { setStatus('確認できませんでした：' + e.message, true); });
+  }
+
+  // 未送信の分も含めた、この棚のこの商品の数
+  function countFor(it) {
+    var k = keyOf(it);
+    var n = shelf.loc === loc() ? (shelf.qty[k] || 0) : 0;
+    queue.forEach(function (r) { if (r.loc === loc() && keyOf(r) === k) n += r.qty; });
+    return n;
+  }
+
+  function addQty(d) {
+    if (!current || !current.item || !d) return;
+    queue.push({ staff: staff(), loc: loc(), jan: current.jan, no: current.item.no, name: label(current.item), qty: d });
+    current.added = (current.added || 0) + d;   // 年違いに数え直すときに取り消す分
+    addHist(label(current.item) + '（' + loc() + '）', d);
+    showCurrent(); renderShelf();
+    pump();
+  }
+
+  function showCurrent() {
+    $('last').hidden = false;
+    var it = current.item;
+    $('lastName').textContent = it ? label(it) : 'JAN ' + current.jan;
+    $('lastMeta').textContent = (it && it.kind ? it.kind + '　' : '') + 'JAN ' + current.jan + '　場所：' + loc();
+    var choices = !it && !current.extra ? byJan[current.jan] || [] : [];
+    $('choiceBox').hidden = choices.length < 2;
+    $('choices').innerHTML = '';
+    if (choices.length > 1) choices.slice().sort(function (a, b) { return a.name < b.name ? -1 : 1; }).forEach(function (c) {
+      var li = document.createElement('li'), b = document.createElement('button');
+      b.type = 'button'; b.textContent = label(c);
+      var sub = document.createElement('span'); sub.className = 'sub';
+      sub.textContent = 'この棚 ' + countFor(c) + '本' + (c.kind ? '　' + c.kind : '');
+      b.appendChild(sub);
+      b.addEventListener('click', function () { if (current && !current.item) { current.item = c; addQty(1); } });
+      li.appendChild(b); $('choices').appendChild(li);
+    });
+    $('registerBox').hidden = !!it || choices.length > 1;
+    $('registerMsg').textContent = current.extra
+      ? 'JAN ' + current.jan + ' に、年違いの商品を足します。リストから探すか、下で新しく登録してください。'
+      : 'このJANはまだ商品に紐づいていません。リストから商品を探して選んでください。';
+    $('qtyBox').hidden = !it;
+    if (it) $('lastCount').textContent = countFor(it);
+  }
+
+  // 同じJANで年違いの商品を足す：読んだ1本を取り消して、商品を選び直す
+  function startExtra() {
+    if (!current) return;
+    var it = current.item;
+    var n = it ? current.added || 0 : 0;
+    if (it && !confirm('「' + label(it) + '」とは年が違う商品として数え直します。' +
+      (n > 0 ? 'いま数えた ' + n + '本は「' + label(it) + '」から取り消します。' : '') + 'よろしいですか？')) return;
+    if (n > 0) addQty(-n);
+    current = { jan: current.jan, item: null, extra: true };
+    showCurrent(); $('q').value = ''; renderResults(); $('q').focus();
+  }
+  $('extraBtn').addEventListener('click', startExtra);
+  $('choiceAdd').addEventListener('click', startExtra);
+
+  // リストから探す：JANが未紐づけの商品だけ。今いる場所の区分にあった商品を先に出す
+  function renderResults() {
+    var ul = $('results'); ul.innerHTML = '';
+    var words = $('q').value.split(/[\s　]+/).map(norm).filter(String);
+    if (!words.length) return;
+    var area = guessArea(loc());
+    var hits = items.filter(function (it) {
+      if (it.jan) return false;
+      for (var i = 0; i < words.length; i++) if (it.key.indexOf(words[i]) < 0) return false;
+      return true;
+    });
+    hits.sort(function (a, b) {
+      var x = area && a.area.indexOf(area) >= 0 ? 0 : 1, y = area && b.area.indexOf(area) >= 0 ? 0 : 1;
+      return x - y || (a.name < b.name ? -1 : 1);
+    });
+    hits.slice(0, 30).forEach(function (it) {
+      var li = document.createElement('li'), b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = label(it);
+      var sub = document.createElement('span'); sub.className = 'sub';
+      sub.textContent = [it.kind, it.rname && it.rname !== it.name ? '楽一：' + it.rname : '', it.area ? '前回：' + it.area : ''].filter(String).join('　');
+      b.appendChild(sub);
+      b.addEventListener('click', function () { linkTo(it); });
+      li.appendChild(b); ul.appendChild(li);
+    });
+    if (!hits.length) {
+      var li = document.createElement('li'); li.textContent = '見つかりません。言葉を短くするか、下の「新しく登録」を使ってください'; ul.appendChild(li);
+    } else if (hits.length > 30) {
+      var more = document.createElement('li'); more.textContent = 'ほか ' + (hits.length - 30) + '件。言葉を足すと絞れます'; ul.appendChild(more);
+    }
+  }
+  $('q').addEventListener('input', renderResults);
+
+  function linkTo(it) {
+    if (!current || current.item) return;
+    if (!confirm('JAN ' + current.jan + ' を「' + label(it) + '」に紐づけて1本数えます。よろしいですか？')) return;
+    var c = current;
+    setStatus('紐づけ中…');
+    api({ action: 'link', jan: c.jan, no: it.no, extra: !!c.extra })
+      .then(function (d) {
+        var got = putItem(toItem(d.item));
+        if (current !== c) return;
+        c.item = got; $('q').value = ''; $('results').innerHTML = '';
+        addQty(1);
+        setStatus(got.no === it.no ? '紐づけました' : 'このJANはほかの人が「' + label(got) + '」に紐づけ済みでした');
+      })
+      .catch(function (e) { setStatus('紐づけできませんでした：' + e.message, true); });
+  }
+
+  $('regBtn').addEventListener('click', function () {
+    var name = $('newName').value.trim();
+    if (!name || !current) { setStatus('商品名を入れてください', true); return; }
+    var c = current;
+    $('regBtn').disabled = true;
+    api({ action: 'register', jan: c.jan, name: name, cap: $('newCap').value.trim(), kind: $('newKind').value.trim(), extra: !!c.extra })
+      .then(function (d) {
+        $('regBtn').disabled = false;
+        $('newName').value = ''; $('newCap').value = ''; $('newKind').value = '';
+        var got = putItem(toItem(d.item));
+        if (current !== c) return;
+        c.item = got; addQty(1);
+      })
+      .catch(function (e) { $('regBtn').disabled = false; setStatus('登録できませんでした：' + e.message, true); });
+  });
+
+  function addHist(text, d) {
+    var li = document.createElement('li');
+    var a = document.createElement('span'); a.textContent = text;
+    var b = document.createElement('span'); b.textContent = (d > 0 ? '＋' : '') + d;
+    li.appendChild(a); li.appendChild(b);
+    $('hist').insertBefore(li, $('hist').firstChild);
+    while ($('hist').children.length > 30) $('hist').removeChild($('hist').lastChild);
+  }
+
+  // たまった記録をまとめて送る（失敗したら5秒後にもう一度）
+  function pump() {
+    if (sending || !queue.length) return;
+    sending = true;
+    var batch = queue.slice(0, 50);
+    setStatus('送信中… 残り ' + queue.length + '件');
+    api({ action: 'scans', rows: batch })
+      .then(function () {
+        // 送れた分は、この棚の数に先に足しておく（次の読み込みで正しい数に置き換わる）
+        batch.forEach(function (r) {
+          if (r.loc !== shelf.loc) return;
+          var k = keyOf(r);
+          shelf.qty[k] = (shelf.qty[k] || 0) + r.qty;
+          shelf.names[k] = shelf.names[k] || r.name;
+        });
+        if (shelf.loc && shelf.staff.indexOf(staff()) < 0 && batch.some(function (r) { return r.loc === shelf.loc; })) shelf.staff.push(staff());
+        queue.splice(0, batch.length); sending = false; sendGen++;
+        setStatus(queue.length ? '送信中… 残り ' + queue.length + '件' : 'スプレッドシートに記録しました');
+        if (queue.length) pump(); else loadShelf();
+      })
+      .catch(function (e) { sending = false; setStatus('送信できませんでした（5秒後にもう一度送ります）：' + e.message, true); setTimeout(pump, 5000); });
+  }
+
+  window.addEventListener('beforeunload', function (e) { if (queue.length) { e.preventDefault(); e.returnValue = ''; } });
+
+  // この棚で読んだ商品（全員分）と、全棚の進み具合を読み込む
+  var shelfLoading = false;
+  function loadShelf() {
+    var l = loc();
+    if (!conn || shelfLoading || sending || queue.length) return;
+    shelfLoading = true;
+    var gen = sendGen;
+    api({ action: 'shelf', loc: l })
+      .then(function (d) {
+        shelfLoading = false;
+        shelves = d.shelves || [];
+        renderProgress();
+        if (l !== loc()) return loadShelf();
+        if (gen !== sendGen) return loadShelf();   // 読み込み中に送った分が抜けているので読み直す
+        shelf = { loc: l, qty: {}, names: {}, staff: d.staff || [], status: d.status || '' };
+        (d.items || []).forEach(function (s) { var k = keyOf(s); shelf.qty[k] = s.qty; shelf.names[k] = s.name; });
+        showShelfBar(); renderShelf();
+        if (current && current.item) $('lastCount').textContent = countFor(current.item);
+      })
+      .catch(function () { shelfLoading = false; });
+  }
+
+  function showShelfBar() {
+    var l = loc();
+    $('shelfName').textContent = l ? '棚：' + l : '棚：（場所・棚を入れてください）';
+    var done = shelf.loc === l && shelf.status === '完了';
+    var st = shelf.loc === l && shelf.status ? shelf.status : (l ? '未着手' : '');
+    var who = shelf.loc === l && shelf.staff.length ? '（' + shelf.staff.join('・') + '）' : '';
+    $('shelfSt').textContent = st ? '状態：' + st + who : '';
+    $('doneBtn').textContent = done ? '作業中に戻す' : 'この棚を完了にする';
+    $('doneBtn').disabled = !l;
+    var others = shelf.loc === l ? shelf.staff.filter(function (s) { return s !== staff(); }) : [];
+    var warn = '';
+    if (done) warn = 'この棚は完了済みです。数え直す場合だけ読んでください。';
+    else if (others.length) warn = 'この棚は ' + others.join('・') + ' さんも読んでいます。同じ商品を重ねて数えないよう声をかけてください。';
+    $('shelfWarn').textContent = warn; $('shelfWarn').hidden = !warn;
+  }
+
+  function renderShelf() {
+    var l = loc(), ul = $('shelfList'); ul.innerHTML = '';
+    var qty = {}, names = {};
+    if (shelf.loc === l) { Object.keys(shelf.qty).forEach(function (j) { qty[j] = shelf.qty[j]; names[j] = shelf.names[j]; }); }
+    queue.forEach(function (r) { var k = keyOf(r); if (r.loc === l) { qty[k] = (qty[k] || 0) + r.qty; names[k] = names[k] || r.name; } });
+    var rows = Object.keys(qty).filter(function (k) { return qty[k] !== 0; })
+      .map(function (k) {
+        var it = k.charAt(0) === 'n' ? byNo[k.slice(1)] : (byJan[k.slice(1)] || [])[0];
+        return { key: k, text: it ? label(it) : names[k] || 'JAN ' + k.slice(1), qty: qty[k] };
+      })
+      .sort(function (a, b) { return a.text < b.text ? -1 : 1; });
+    var total = 0;
+    rows.forEach(function (r) {
+      total += r.qty;
+      var li = document.createElement('li');
+      if (current && current.item && keyOf(current.item) === r.key) li.className = 'hl';
+      var a = document.createElement('span'); a.textContent = r.text;
+      var b = document.createElement('span'); b.textContent = r.qty + '本';
+      li.appendChild(a); li.appendChild(b); ul.appendChild(li);
+    });
+    $('shelfHead').textContent = l ? 'この棚（' + l + '）で読んだ商品（全員分）：' + rows.length + '品目・' + total + '本' : 'この棚で読んだ商品';
+  }
+
+  function renderProgress() {
+    var ul = $('progList'); ul.innerHTML = '';
+    var n = { '完了': 0, '作業中': 0, '未着手': 0 };
+    shelves.forEach(function (s) {
+      var st = s.status || '未着手';
+      n[st] = (n[st] || 0) + 1;
+      var li = document.createElement('li');
+      if (s.loc === loc()) li.className = 'hl';
+      var a = document.createElement('span'); a.textContent = s.loc + (s.staff ? '（' + s.staff + '）' : '');
+      var b = document.createElement('span'); b.textContent = st;
+      li.appendChild(a); li.appendChild(b); ul.appendChild(li);
+    });
+    $('progHead').textContent = '棚の進み具合：完了 ' + n['完了'] + '・作業中 ' + n['作業中'] + '・未着手 ' + n['未着手'];
+  }
+
+  $('doneBtn').addEventListener('click', function () {
+    var l = loc();
+    if (!l || !staff()) { setStatus('先に担当と場所を入れてください', true); return; }
+    var undo = shelf.loc === l && shelf.status === '完了';
+    if (!undo && queue.some(function (r) { return r.loc === l; })) { setStatus('まだ送っていない記録があります。送信が終わってから押してください', true); return; }
+    if (!undo && !confirm('「' + l + '」を完了にします。この棚の商品はすべて読みましたか？')) return;
+    $('doneBtn').disabled = true;
+    api({ action: 'done', loc: l, staff: staff(), done: !undo })
+      .then(function (d) {
+        $('doneBtn').disabled = false;
+        if (shelf.loc === l) shelf.status = d.status;
+        showShelfBar(); setStatus('「' + l + '」を' + d.status + 'にしました');
+        loadShelf();
+      })
+      .catch(function (e) { $('doneBtn').disabled = false; setStatus('変更できませんでした：' + e.message, true); });
+  });
+
+  $('missBtn').addEventListener('click', function () {
+    var area = $('area').value;
+    $('missHead').textContent = '読み込み中…'; $('missList').innerHTML = '';
+    api({ action: 'missing', area: area })
+      .then(function (d) {
+        var list = d.items || [];
+        $('missHead').textContent = '前回「' + area + '」にあって、まだ読んでいない商品：' + list.length + '品目';
+        list.forEach(function (r) {
+          var li = document.createElement('li');
+          var a = document.createElement('span'); a.textContent = r[1] + (r[2] ? '　' + r[2] : '') + (r[0] ? '（' + r[0] + '）' : '');
+          var b = document.createElement('span'); b.textContent = '前回 ' + r[3] + '本';
+          li.appendChild(a); li.appendChild(b); $('missList').appendChild(li);
+        });
+      })
+      .catch(function (e) { $('missHead').textContent = '読み込めませんでした：' + e.message; });
+  });
+
+  document.querySelectorAll('#qtyBox button[data-d]').forEach(function (b) {
+    b.addEventListener('click', function () { addQty(Number(b.getAttribute('data-d'))); });
+  });
+  $('bulkBtn').addEventListener('click', function () {
+    var n = parseInt($('bulk').value, 10);
+    if (n) { addQty(n); $('bulk').value = ''; }
+  });
+
+  // Bluetoothスキャナー（キーボード入力型）・手入力
+  $('kbd').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); handleCode(this.value); this.value = ''; }
+  });
+
+  // カメラ：開いたまま連続で読む。同じコードは2秒間は無視（二重カウント防止）
+  $('camBtn').addEventListener('click', function () {
+    if (camOn) { scanner.stop().then(function () { camOn = false; $('camBtn').textContent = 'カメラで読む'; }); return; }
+    if (!window.Html5Qrcode) { setStatus('読み取り部品を読み込めませんでした。通信状況を確認して開き直してください', true); return; }
+    var F = Html5QrcodeSupportedFormats;
+    scanner = scanner || new Html5Qrcode('reader', { formatsToSupport: [F.EAN_13, F.EAN_8, F.UPC_A, F.QR_CODE], verbose: false });
+    scanner.start({ facingMode: 'environment' }, { fps: 10, qrbox: { width: 260, height: 140 } },
+      function (text) {
+        var now = Date.now();
+        if (text === lastHit.code && now - lastHit.at < 2000) return;
+        lastHit = { code: text, at: now };
+        handleCode(text);
+      }, function () {})
+      .then(function () { camOn = true; $('camBtn').textContent = 'カメラを止める'; setStatus('カメラ起動中。バーコードを枠に入れてください'); })
+      .catch(function (e) { setStatus('カメラを使えませんでした：' + e, true); });
+  });
+</script>
+</body>
+</html>
