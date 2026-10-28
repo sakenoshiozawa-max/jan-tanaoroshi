@@ -47,7 +47,7 @@ function setup() {
   byItem.getRange('D2').setFormula(nameFormula_('A', 'C'));
   byItem.getRange('E2').setFormula(
     '=ARRAYFORMULA(IF(A2:A="","",IFERROR(1/(1/IF(C2:C="",VLOOKUP(A2:A,' + M + 'A:C,3,FALSE),' +
-    'INDEX(' + M + 'C:C,MATCH(C2:C,' + M + 'K:K,0)))),"")))');
+    'VLOOKUP(C2:C,{' + M + 'K:K,' + M + 'C:C},2,FALSE))),"")))');
   byItem.getRange('F2').setFormula(
     '=ARRAYFORMULA(IF((A2:A="")+(E2:E=""),"",B2:B*E2:E))');
   byItem.getRange('H1:H2').setValues([['仕入金額 合計'], ['']]);
@@ -92,12 +92,13 @@ function setup() {
 }
 
 // 集計シートの商品名：No があれば No で、無ければ（古い記録）JAN で商品マスタを引く
+// （INDEX/MATCH は ARRAYFORMULA で行ごとに広がらないので、VLOOKUP と {} の表で引く）
 function nameFormula_(janCol, noCol) {
   const M = "'" + SHEET_MASTER + "'!";
   const j = janCol + '2:' + janCol, n = noCol + '2:' + noCol;
   return '=ARRAYFORMULA(IF(' + j + '="","",IFERROR(IF(' + n + '="",' +
     'VLOOKUP(' + j + ',' + M + 'A:D,2,FALSE)&"　"&VLOOKUP(' + j + ',' + M + 'A:D,4,FALSE),' +
-    'INDEX(' + M + 'B:B,MATCH(' + n + ',' + M + 'K:K,0))&"　"&INDEX(' + M + 'D:D,MATCH(' + n + ',' + M + 'K:K,0))),"（未登録）")))';
+    'VLOOKUP(' + n + ',{' + M + 'K:K,' + M + 'B:B&"　"&' + M + 'D:D},2,FALSE)),"（未登録）")))';
 }
 
 // No の空いている記録に、JAN から商品の No を入れる（そのJANの商品が1つだけのとき）
